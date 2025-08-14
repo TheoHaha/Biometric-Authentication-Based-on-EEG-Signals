@@ -4,6 +4,7 @@ import re
 from itertools import permutations
 from typing import Callable
 
+import keras
 import mne
 import numpy as np
 import tensorflow as tf
@@ -82,7 +83,7 @@ def prepare_and_save_user_data(
     Args:
         alpha_users_n (int): How many alpha users we have.
         chosen_channels (list): Which channels were chosen.
-        strategy (tf.distribute.Strategy): What strategy is going to be used for the calculations.
+        strategy (keras.distribute.Strategy): What strategy is going to be used for the calculations.
         alpha_test_size (float, optional): How much of the alpha user subset will be used for validation during training. Defaults to 0.2.
         orthogonalize (bool, optional): Whether to orthogonalize the signals. Defaults to True.
     """
@@ -170,11 +171,11 @@ def load_accuracy_data(accuracy_data_path):
 
 
 # sliding window routine
-@tf.function
 def sliding_window_out(arr, label):
     out = sliding_window(arr, T, delta)
-    out = tf.transpose(out, perm=[1, 2, 0])
-    out = tf.ensure_shape(out, (h, T, arr.shape[0]))
+    out = np.transpose(out, (1, 2, 0))
+    # No keras equivalent for tf.ensure_shape, so skip or use assert
+    assert out.shape == (h, T, arr.shape[0])
     return out, label
 
 
@@ -211,7 +212,7 @@ def channel_selection_CNN(
     # orthogonal forward search
     acc = {0: 0}
 
-    tf.keras.backend.clear_session()
+    keras.backend.clear_session()
     while True:  # max(acc.values()) < 0.99:
         acc = {}
         tik_all = {}
@@ -326,7 +327,7 @@ def channel_selection_resnet18(
 
     acc = {0: 0}
 
-    tf.keras.backend.clear_session()
+    keras.backend.clear_session()
     while True:
         acc = {}
         print(f"Search space size: {len(search_space_P)}")
@@ -504,7 +505,7 @@ def main() -> None:
 
     # acc_save_file = os.path.join(saves_path, "accuracies.txt")  # noqa: F841
     # model_dir = "saves/C_[22, 23, 24]-epoch_30.keras"
-    # model = tf.keras.models.load_model(model_dir)
+    # model = keras.models.load_model(model_dir)
     # alpha_train_X = np.load("user_data/alpha_train_X.npy")
     # alpha_train_y = np.load("user_data/alpha_train_y.npy")
 

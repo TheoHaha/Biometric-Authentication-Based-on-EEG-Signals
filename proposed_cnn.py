@@ -1,37 +1,36 @@
 import os
 
-import tensorflow as tf
+import keras
+from keras.callbacks import ModelCheckpoint
+from keras.losses import CategoricalCrossentropy
+from keras.optimizers import RMSprop
 from sklearn.model_selection import train_test_split
-from tensorflow.keras.callbacks import (  # type:ignore  # noqa: F401
-    ModelCheckpoint,
-)
-from tensorflow.keras.losses import CategoricalCrossentropy  # type:ignore
-from tensorflow.keras.optimizers import RMSprop  # type:ignore
 
 from my_utils import checkpoint_exists, create_dataset, get_latest_epoch  # type:ignore
 
+
 def create_model(no_of_channels, no_of_subjects, h, T):
-    fingerprinting_layers = tf.keras.Sequential(
+    fingerprinting_layers = keras.Sequential(
         [
-            tf.keras.layers.Input(shape=(h, T, no_of_channels)),
-            tf.keras.layers.Conv2D(128, (3, 3), activation="relu", padding="same"),
-            tf.keras.layers.MaxPool2D((2, 2)),
-            tf.keras.layers.Conv2D(256, (3, 3), activation="relu", padding="same"),
-            tf.keras.layers.MaxPool2D((2, 2)),
-            tf.keras.layers.Conv2D(512, (3, 3), activation="relu", padding="same"),
-            tf.keras.layers.Flatten(),
+            keras.layers.Input(shape=(h, T, no_of_channels)),
+            keras.layers.Conv2D(128, (3, 3), activation="relu", padding="same"),
+            keras.layers.MaxPool2D((2, 2)),
+            keras.layers.Conv2D(256, (3, 3), activation="relu", padding="same"),
+            keras.layers.MaxPool2D((2, 2)),
+            keras.layers.Conv2D(512, (3, 3), activation="relu", padding="same"),
+            keras.layers.Flatten(),
         ]
     )
 
-    id_layers = tf.keras.Sequential(
+    id_layers = keras.Sequential(
         [
-            tf.keras.layers.Dense(1024, activation="relu"),
-            tf.keras.layers.Dropout(rate=0.25),
-            tf.keras.layers.Dense(no_of_subjects, activation="softmax"),
+            keras.layers.Dense(1024, activation="relu"),
+            keras.layers.Dropout(rate=0.25),
+            keras.layers.Dense(no_of_subjects, activation="softmax"),
         ]
     )
 
-    model = tf.keras.Sequential(
+    model = keras.Sequential(
         [
             fingerprinting_layers,
             id_layers,
@@ -44,16 +43,16 @@ def create_model(no_of_channels, no_of_subjects, h, T):
         optimizer=optimizer,
         loss=loss,
         metrics=[
-            tf.keras.metrics.CategoricalAccuracy(),
-            # tf.keras.metrics.Precision(),
-            # tf.keras.metrics.Recall(),
+            keras.metrics.CategoricalAccuracy(),
+            # keras.metrics.Precision(),
+            # keras.metrics.Recall(),
         ],
     )
     return model
 
 
 # custom callback that deletes saved model of 2nd previous epoch
-class DeleteCheckpointCallback(tf.keras.callbacks.Callback):
+class DeleteCheckpointCallback(keras.callbacks.Callback):
     def __init__(self, save_file_dir, chosen_channels, max_epochs):
         self.save_file_dir = save_file_dir
         self.chosen_channels = chosen_channels
@@ -107,7 +106,7 @@ def train_model_on_V(
         else:
             # if we find checkpoints, pick up where we left off
             latest_epoch, model_dir = get_latest_epoch(save_file_dir, chosen_channels)
-            model = tf.keras.models.load_model(model_dir)
+            model = keras.models.load_model(model_dir)
             print(f"loaded model from {model_dir}")
             print(f"resuming training from epoch {latest_epoch + 1}")
 

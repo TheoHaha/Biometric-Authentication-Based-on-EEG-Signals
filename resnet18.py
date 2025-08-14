@@ -1,14 +1,12 @@
 import os
 
+import keras
 import tensorflow as tf
 from classification_models.keras import Classifiers
+from keras.callbacks import EarlyStopping, ModelCheckpoint
+from keras.losses import CategoricalCrossentropy
+from keras.optimizers import RMSprop
 from sklearn.model_selection import train_test_split
-from tensorflow.keras.callbacks import (  # type:ignore  # noqa: F401
-    ModelCheckpoint,
-    EarlyStopping,
-)
-from tensorflow.keras.losses import CategoricalCrossentropy  # type:ignore
-from tensorflow.keras.optimizers import RMSprop  # type: ignore
 
 from my_utils import checkpoint_exists, create_dataset, get_latest_epoch  # type:ignore
 
@@ -24,22 +22,23 @@ def create_model(no_of_subjects=90, h=20, T=160, trained=True):
         include_top=False,
     )
 
-    fingerprint_layers = tf.keras.Sequential(
+
+    fingerprint_layers = keras.Sequential(
         [
             base_model,
-            tf.keras.layers.Flatten(),
+            keras.layers.Flatten(),
         ]
     )
 
-    id_layers = tf.keras.Sequential(
+    id_layers = keras.Sequential(
         [
-            tf.keras.layers.Dense(1024, activation="relu"),
-            tf.keras.layers.Dropout(rate=0.25),
-            tf.keras.layers.Dense(no_of_subjects, activation="softmax"),
+            keras.layers.Dense(1024, activation="relu"),
+            keras.layers.Dropout(rate=0.25),
+            keras.layers.Dense(no_of_subjects, activation="softmax"),
         ]
     )
 
-    model = tf.keras.Sequential(
+    model = keras.Sequential(
         [
             fingerprint_layers,
             id_layers,
@@ -53,9 +52,9 @@ def create_model(no_of_subjects=90, h=20, T=160, trained=True):
         optimizer=optimizer,
         loss=loss,
         metrics=[
-            tf.keras.metrics.CategoricalAccuracy(),
-            # tf.keras.metrics.Precision(),
-            # tf.keras.metrics.Recall(),
+            keras.metrics.CategoricalAccuracy(),
+            # keras.metrics.Precision(),
+            # keras.metrics.Recall(),
         ],
     )
 
@@ -63,7 +62,7 @@ def create_model(no_of_subjects=90, h=20, T=160, trained=True):
 
 
 # custom callback that deletes saved model of 2nd previous epoch
-class DeleteCheckpointCallback(tf.keras.callbacks.Callback):
+class DeleteCheckpointCallback(keras.callbacks.Callback):
     def __init__(self, save_file_dir, chosen_channels, max_epochs):
         self.save_file_dir = save_file_dir
         self.chosen_channels = chosen_channels
