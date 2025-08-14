@@ -5,6 +5,7 @@ from itertools import permutations
 from typing import Callable
 
 import keras
+from keras.callbacks import EarlyStopping
 import mne
 import numpy as np
 import tensorflow as tf
@@ -124,41 +125,6 @@ def prepare_and_save_user_data(
     print(f"Data saved in {save_dir}")
 
 
-# TODO: implement or depreciate
-def preprocess_and_save_dataset(
-    strategy: tf.distribute.Strategy,
-    test_size=0.2,
-    orthogonalize=True,
-    save_dir="dataset_preprocessed/",
-) -> None:
-    saved_args = {**locals()}
-    with open(save_dir + "args.txt", "w+") as f:
-        f.write(repr(saved_args))
-
-    def save_user_data(data, name):
-        np.save(save_dir + f"{name}.npy", data)
-
-    with strategy.scope():
-        data = load_data(dataset_path=dataset_path, end=108)
-
-        if orthogonalize:
-            data = orthogonalize_data(data)
-
-        data_X, data_y = create_samples_and_labels(data, Gamma, D)
-        data_train_X, data_test_X, data_train_y, data_test_y = train_test_split(
-            data_X.numpy(),
-            data_y.numpy(),
-            test_size=test_size,
-            shuffle=False,
-        )
-        save_user_data(data_train_X, "data_train_X")
-        save_user_data(data_test_X, "data_test_X")
-        save_user_data(data_train_y, "data_train_y")
-        save_user_data(data_test_y, "data_test_y")
-
-    print(f"Data saved in {save_dir}")
-
-
 # TODO: implement this
 def load_accuracy_data(accuracy_data_path):
     regex = r"\[.+\]"
@@ -173,7 +139,7 @@ def load_accuracy_data(accuracy_data_path):
 # sliding window routine
 def sliding_window_out(arr, label):
     out = sliding_window(arr, T, delta)
-    out = np.transpose(out, (1, 2, 0))
+    out = tf.transpose(out, (1, 2, 0))
     # No keras equivalent for tf.ensure_shape, so skip or use assert
     assert out.shape == (h, T, arr.shape[0])
     return out, label
@@ -295,7 +261,7 @@ def channel_selection_resnet18(
     if os.path.exists(acc_save_file):
         with open(acc_save_file, "r") as f:
             for line in f:
-                # Each line format: "[channels] : accuracy"
+                # Each line format: "[channels] : stats"
                 match = re.match(r"\[(.*?)\]\s*:", line)
                 if match:
                     channels_str = match.group(1)
@@ -306,7 +272,8 @@ def channel_selection_resnet18(
                         print(e)
                         continue
     print(f"Found {len(checked_permutations)} checked permutations")
-    # orthogonalize channels one by one in order
+    
+    # Method for orthogonalizing channels one by one in order
     def orthogonalize_channels(channels):
         first_channel = channels[0]
         tmp = data[:, first_channel : first_channel + 1, :].copy()
@@ -325,22 +292,19 @@ def channel_selection_resnet18(
     # symbol: i
     i = 0
 
-    acc = {0: 0}
-
     keras.backend.clear_session()
     while True:
-        acc = {}
         print(f"Search space size: {len(search_space_P)}")
         # for every throuple of channels k in the search space
         for k in search_space_P:
-            accuracy_on_K = 0
             V_tmp = []
             chosen_channels = list(k)
 
             V_tmp = orthogonalize_channels(k)
             V_tmp_data, V_tmp_labels = create_samples_and_labels(V_tmp, Gamma, D)
+            
             print(f"Training on channels {chosen_channels}")
-            accuracy_on_K = resnet18.train_model_on_V(
+            stats_on_K = resnet18.train_model_on_V(
                 V_tmp_data,
                 V_tmp_labels,
                 chosen_channels,
@@ -350,30 +314,44 @@ def channel_selection_resnet18(
                 sliding_window_out,
                 strategy,
             )
-            print(f"Accuracy on channels {chosen_channels}: {accuracy_on_K}")
+            print(f"Stats on channels {chosen_channels}: {stats_on_K}")
 
-            f = open(acc_save_file, "a")
-            f.write(f"{chosen_channels} : {accuracy_on_K}\n")
-            f.close()
+            with open(acc_save_file, "a") as f:
+                f.write(f"{chosen_channels} : {stats_on_K}\n")
 
-            acc[k] = accuracy_on_K
-
-        values = np.array(list(acc.values()))
-        keys = np.array(list(acc.keys()))
-        k_star = int(keys[np.argmax(values)])
-
-        search_space_P.remove(k_star)
-        print("==================================================")
+            search_space_P.remove(k)
+            print("==================================================")
+            
         i += 1
 
-        if max(values) >= 0.999:
-            print(
-                f"Stopping training, max accuracy reached: {max(values)} with channels {acc[k_star]}"
-            )
-            break
-        
         if len(search_space_P) == 0:
             break
+
+
+def calculate_resnet18_model_score(acc_save_file):
+    # read the acc_save_file and calculate which channels are the best
+    if os.path.exists(acc_save_file):
+        with open(acc_save_file, "r") as f:
+            lines = f.readlines()
+            scores = {}
+            for line in lines:
+                match = re.match(r"\[(.*?)\]\s*:\s*(\{.*\})", line)
+                if match:
+                    channels_str = match.group(1)
+                    metrics_str = match.group(2)
+                    channels = ast.literal_eval(f"[{channels_str}]")
+                    metrics = ast.literal_eval(metrics_str)
+                    score = calculate_score(metrics["categorical_accuracy"], metrics["val_categorical_accuracy"], metrics["loss"], metrics["val_loss"])
+                    scores[tuple(channels)] = score
+            print(scores)
+            best_channels = max(scores, key=scores.get)
+            print(f"Best channels: {best_channels} with score {scores[best_channels]}")
+            return list(best_channels), scores[best_channels]
+
+
+def calculate_score(categorical_accuracy, val_categorical_accuracy, loss, val_loss):
+    score = 1e-6 * (categorical_accuracy + val_categorical_accuracy) / (loss + val_loss)
+    return score
 
 
 def train_and_save_resnet18_model(
@@ -396,6 +374,17 @@ def train_and_save_resnet18_model(
     )
 
     with strategy.scope():
+        early_stopping_callback = EarlyStopping(
+            monitor="val_loss",
+            mode="min",
+            start_from_epoch=5,
+            patience=3,
+            min_delta=0.0001,
+            baseline=0.001,
+            restore_best_weights=False,
+            verbose=1,
+        )
+        
         model.fit(
             x=dataset_train,
             validation_data=dataset_test,
@@ -403,7 +392,7 @@ def train_and_save_resnet18_model(
             steps_per_epoch=None,
             validation_steps=None,
             verbose=1,
-            callbacks=[resnet18.early_stopping_callback],
+            callbacks=[early_stopping_callback],
         )
     model.save(f"{saves_path}resnet18_C_{chosen_channels}-final.keras")
     print("==============================================")
@@ -495,6 +484,8 @@ def main() -> None:
         acc_save_file="saves2/accuracies.txt",
         strategy=strategy,
     )
+    
+    calculate_resnet18_model_score("saves2/accuracies.txt")
     # chosen_channels = [22, 23, 24]
 
     # prepare_and_save_user_data(
