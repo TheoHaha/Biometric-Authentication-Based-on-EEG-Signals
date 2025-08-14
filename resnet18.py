@@ -22,7 +22,6 @@ def create_model(no_of_subjects=90, h=20, T=160, trained=True):
         include_top=False,
     )
 
-
     fingerprint_layers = keras.Sequential(
         [
             base_model,
@@ -76,25 +75,16 @@ class DeleteCheckpointCallback(keras.callbacks.Callback):
             )
             if os.path.exists(checkpoint_path):
                 os.remove(checkpoint_path)
-    
+
     def on_train_end(self, logs=None):
         # delete all checkpoints after training ends
         for filename in os.listdir(self.save_file_dir):
-            if filename.startswith(f"resnet18_C_{self.chosen_channels}-epoch_") and filename.endswith(".keras"):
+            if filename.startswith(
+                f"resnet18_C_{self.chosen_channels}-epoch_"
+            ) and filename.endswith(".keras"):
                 checkpoint_path = os.path.join(self.save_file_dir, filename)
                 if os.path.exists(checkpoint_path):
                     os.remove(checkpoint_path)
-
-
-early_stopping_callback = EarlyStopping(
-    monitor="val_loss",
-    mode="auto",
-    min_delta=0.0001,
-    baseline=0.001,
-    patience=3,
-    restore_best_weights=False,
-    verbose=1,
-)
 
 
 def train_model_on_V(
@@ -122,6 +112,18 @@ def train_model_on_V(
         )
         del_checkpoint_callback = DeleteCheckpointCallback(
             save_file_dir, chosen_channels, max_epochs=30
+        )
+        
+        # set up early stopping callback
+        early_stopping_callback = EarlyStopping(
+            monitor="val_loss",
+            mode="min",
+            start_from_epoch=5,
+            patience=3,
+            min_delta=0.0001,
+            baseline=0.001,
+            restore_best_weights=False,
+            verbose=1,
         )
 
         if not checkpoint_exists(save_file_dir, chosen_channels):
@@ -151,7 +153,12 @@ def train_model_on_V(
             ],
         )
     # pdb.set_trace()
-    return stats.history["categorical_accuracy"][-1]
+    return {
+        "categorical_accuracy": stats.history["categorical_accuracy"][-1],
+        "loss": stats.history["loss"][-1],
+        "val_categorical_accuracy": stats.history["val_categorical_accuracy"][-1],
+        "val_loss": stats.history["val_loss"][-1],
+    }
 
 
 # ResNet18(input_shape=(20,160,3), weights='imagenet', include_top=False).summary()
