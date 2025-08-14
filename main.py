@@ -13,6 +13,7 @@ from sklearn.model_selection import train_test_split
 import proposed_cnn
 import resnet18
 from my_utils import (
+    create_dataset,
     create_samples_and_labels,
     fast_minmax_scale,
     get_absolute_paths,
@@ -177,7 +178,9 @@ def sliding_window_out(arr, label):
     return out, label
 
 
-def train_CNN_model(data, search_space, best_channels, strategy, acc_save_file) -> None:
+def channel_selection_CNN(
+    data, search_space, best_channels, strategy, acc_save_file
+) -> None:
     # setting up orthogonal forward search for channels
     # symbols as given in the algorithm
     # symbol: E
@@ -282,28 +285,27 @@ def train_CNN_model(data, search_space, best_channels, strategy, acc_save_file) 
             break
 
 
-# TODO: Complete this and run it
-def train_resnet18_model(
-    data, search_space, best_channels, strategy, acc_save_file="saves/accuracies_resnet18.txt"
+def channel_selection_resnet18(
+    data, search_space, strategy, acc_save_file
 ) -> None:
-    # Detect already checked permutations
+    # Detect already checked permutations from acc_save_file
     checked_permutations = set()
-    print("Checking for already checked permutations...")
-    for fname in os.listdir(saves_path):
-        if fname.startswith("resnet18_C_") and "-epoch_30" in fname:
-            # Extract the channel list from the filename
-            start = fname.find("C_") + 2
-            end = fname.find("-epoch_30")
-            channels_str = fname[start:end]
-            try:
-                channels = ast.literal_eval(channels_str)
-                checked_permutations.add(tuple(channels))
-            except Exception as e:
-                print(e)
-                continue
-    print(f"Found {len(checked_permutations)} checked perms")
-    
-    # orthogonalize channels one by one
+    print("Checking for already checked permutations in accuracy file...")
+    if os.path.exists(acc_save_file):
+        with open(acc_save_file, "r") as f:
+            for line in f:
+                # Each line format: "[channels] : accuracy"
+                match = re.match(r"\[(.*?)\]\s*:", line)
+                if match:
+                    channels_str = match.group(1)
+                    try:
+                        channels = ast.literal_eval(f"[{channels_str}]")
+                        checked_permutations.add(tuple(channels))
+                    except Exception as e:
+                        print(e)
+                        continue
+    print(f"Found {len(checked_permutations)} checked permutations")
+    # orthogonalize channels one by one in order
     def orthogonalize_channels(channels):
         first_channel = channels[0]
         tmp = data[:, first_channel : first_channel + 1, :].copy()
@@ -319,8 +321,6 @@ def train_resnet18_model(
     search_space_P = [
         p for p in permutations(search_space, 3) if tuple(p) not in checked_permutations
     ]
-    print(f"Search space permutations: {len(search_space_P)}")
-    # return
     # symbol: i
     i = 0
 
@@ -329,7 +329,7 @@ def train_resnet18_model(
     tf.keras.backend.clear_session()
     while True:
         acc = {}
-        
+        print(f"Search space size: {len(search_space_P)}")
         # for every throuple of channels k in the search space
         for k in search_space_P:
             accuracy_on_K = 0
@@ -356,20 +356,57 @@ def train_resnet18_model(
             f.close()
 
             acc[k] = accuracy_on_K
-            # tik_all[k] = tik
 
         values = np.array(list(acc.values()))
         keys = np.array(list(acc.keys()))
         k_star = int(keys[np.argmax(values)])
 
-        search_space.remove(k_star)
-        best_channels.append(k_star)
+        search_space_P.remove(k_star)
         print("==================================================")
         i += 1
 
         if max(values) >= 0.999:
-            print(f"Stopping training, max accuracy reached: {max(values)} with channels {acc[k_star]}")
+            print(
+                f"Stopping training, max accuracy reached: {max(values)} with channels {acc[k_star]}"
+            )
             break
+        
+        if len(search_space_P) == 0:
+            break
+
+
+def train_and_save_resnet18_model(
+    alpha_train_X, alpha_train_y, alpha_test_X, alpha_test_y, chosen_channels, strategy
+) -> None:
+    no_of_subjects = alpha_train_y.shape[1]
+    model = resnet18.create_model(no_of_subjects=no_of_subjects)
+
+    dataset_train = create_dataset(
+        alpha_train_X[:, chosen_channels, :],
+        alpha_train_y,
+        sliding_window_out,
+        strategy,
+    )
+    dataset_test = create_dataset(
+        alpha_test_X[:, chosen_channels, :],
+        alpha_test_y,
+        sliding_window_out,
+        strategy,
+    )
+
+    with strategy.scope():
+        model.fit(
+            x=dataset_train,
+            validation_data=dataset_test,
+            epochs=30,
+            steps_per_epoch=None,
+            validation_steps=None,
+            verbose=1,
+            callbacks=[resnet18.early_stopping_callback],
+        )
+    model.save(f"{saves_path}resnet18_C_{chosen_channels}-final.keras")
+    print("==============================================")
+    print("Job done")
 
 
 def full_train_resnet18_model(data, strategy) -> None:
@@ -450,11 +487,11 @@ def get_all_test_user_samples(user_i: int, test_X, test_y):
 def main() -> None:
     strategy = tf.distribute.get_strategy()
     data = load_data(dataset_path=dataset_path, end=10)
-    
-    train_resnet18_model(
+
+    channel_selection_resnet18(
         data=data,
         search_space=list(range(22, 30)),
-        best_channels=None,
+        acc_save_file="saves2/accuracies.txt",
         strategy=strategy,
     )
     # chosen_channels = [22, 23, 24]

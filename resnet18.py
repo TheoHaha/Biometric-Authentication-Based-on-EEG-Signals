@@ -5,6 +5,7 @@ from classification_models.keras import Classifiers
 from sklearn.model_selection import train_test_split
 from tensorflow.keras.callbacks import (  # type:ignore  # noqa: F401
     ModelCheckpoint,
+    EarlyStopping,
 )
 from tensorflow.keras.losses import CategoricalCrossentropy  # type:ignore
 from tensorflow.keras.optimizers import RMSprop  # type: ignore
@@ -76,6 +77,25 @@ class DeleteCheckpointCallback(tf.keras.callbacks.Callback):
             )
             if os.path.exists(checkpoint_path):
                 os.remove(checkpoint_path)
+    
+    def on_train_end(self, logs=None):
+        # delete all checkpoints after training ends
+        for filename in os.listdir(self.save_file_dir):
+            if filename.startswith(f"resnet18_C_{self.chosen_channels}-epoch_") and filename.endswith(".keras"):
+                checkpoint_path = os.path.join(self.save_file_dir, filename)
+                if os.path.exists(checkpoint_path):
+                    os.remove(checkpoint_path)
+
+
+early_stopping_callback = EarlyStopping(
+    monitor="val_loss",
+    mode="auto",
+    min_delta=0.0001,
+    baseline=0.001,
+    patience=3,
+    restore_best_weights=False,
+    verbose=1,
+)
 
 
 def train_model_on_V(
@@ -104,9 +124,6 @@ def train_model_on_V(
         del_checkpoint_callback = DeleteCheckpointCallback(
             save_file_dir, chosen_channels, max_epochs=30
         )
-        # checkpoint_callback = BackupAndRestore(
-        #     backup_dir=checkpoint_path, save_freq="epoch", delete_checkpoint=True
-        # )
 
         if not checkpoint_exists(save_file_dir, chosen_channels):
             # if no existing checkpoints are found, create the model from scratch and set initial epoch to 0
@@ -128,7 +145,11 @@ def train_model_on_V(
             steps_per_epoch=None,
             validation_steps=None,
             verbose=1,
-            callbacks=[checkpoint_callback, del_checkpoint_callback],
+            callbacks=[
+                checkpoint_callback,
+                del_checkpoint_callback,
+                early_stopping_callback,
+            ],
         )
     # pdb.set_trace()
     return stats.history["categorical_accuracy"][-1]
