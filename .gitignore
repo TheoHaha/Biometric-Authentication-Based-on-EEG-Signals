@@ -1,6 +1,6 @@
 ## project-specific ignores
 dataset/*
-saves/*
+saves*/*
 user_data/*
 sources.txt
 test*.py

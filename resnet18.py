@@ -7,7 +7,7 @@ from tensorflow.keras.callbacks import (  # type:ignore  # noqa: F401
     ModelCheckpoint,
 )
 from tensorflow.keras.losses import CategoricalCrossentropy  # type:ignore
-from tensorflow.keras.optimizers import RMSprop
+from tensorflow.keras.optimizers import RMSprop  # type: ignore
 
 from my_utils import checkpoint_exists, create_dataset, get_latest_epoch  # type:ignore
 
@@ -81,7 +81,7 @@ class DeleteCheckpointCallback(tf.keras.callbacks.Callback):
 def train_model_on_V(
     V, labels, chosen_channels, save_file_dir, h, T, sliding_window_out, strategy
 ):
-    no_of_channels = V.shape[1]
+    # no_of_channels = V.shape[1]
     no_of_subjects = labels.shape[1]
     X_train, X_test, y_train, y_test = train_test_split(
         V.numpy(), labels.numpy(), test_size=0.2, random_state=42
@@ -111,7 +111,7 @@ def train_model_on_V(
         if not checkpoint_exists(save_file_dir, chosen_channels):
             # if no existing checkpoints are found, create the model from scratch and set initial epoch to 0
             print("no existing checkpoints found")
-            model = create_model(no_of_channels, no_of_subjects, h, T)
+            model = create_model(no_of_subjects=no_of_subjects)
             latest_epoch = 0
         else:
             # if we find checkpoints, pick up where we left off
