@@ -286,17 +286,17 @@ def channel_selection_resnet18(
             tmp = np.concatenate([tmp, orth_tmp], axis=1)
         return tmp
 
-    search_space_P = [
+    search_space_P = sorted([
         p for p in permutations(search_space, 3) if tuple(p) not in checked_permutations
-    ]
+    ])
     # symbol: i
     i = 0
 
-    keras.backend.clear_session()
     while True:
         print(f"Search space size: {len(search_space_P)}")
         # for every throuple of channels k in the search space
         for k in search_space_P:
+            keras.backend.clear_session()
             V_tmp = []
             chosen_channels = list(k)
 
@@ -314,7 +314,7 @@ def channel_selection_resnet18(
                 sliding_window_out,
                 strategy,
             )
-            print(f"Stats on channels {chosen_channels}: {stats_on_K}")
+            # print(f"Stats on channels {chosen_channels}: {stats_on_K}")
 
             with open(acc_save_file, "a") as f:
                 f.write(f"{chosen_channels} : {stats_on_K}\n")
@@ -374,16 +374,17 @@ def train_and_save_resnet18_model(
     )
 
     with strategy.scope():
-        early_stopping_callback = EarlyStopping(
-            monitor="val_loss",
-            mode="min",
-            start_from_epoch=5,
-            patience=3,
-            min_delta=0.0001,
-            baseline=0.001,
-            restore_best_weights=False,
-            verbose=1,
-        )
+        # set up early stopping callback
+        # early_stopping_callback = EarlyStopping(
+        #     monitor="categorical_accuracy",
+        #     mode="max",
+        #     start_from_epoch=5,
+        #     patience=3,
+        #     min_delta=0.0001,
+        #     baseline=0.99,
+        #     restore_best_weights=False,
+        #     verbose=1,
+        # )
         
         model.fit(
             x=dataset_train,
@@ -392,7 +393,7 @@ def train_and_save_resnet18_model(
             steps_per_epoch=None,
             validation_steps=None,
             verbose=1,
-            callbacks=[early_stopping_callback],
+            # callbacks=[early_stopping_callback],
         )
     model.save(f"{saves_path}resnet18_C_{chosen_channels}-final.keras")
     print("==============================================")
@@ -476,7 +477,7 @@ def get_all_test_user_samples(user_i: int, test_X, test_y):
 
 def main() -> None:
     strategy = tf.distribute.get_strategy()
-    data = load_data(dataset_path=dataset_path, end=10)
+    data = load_data(dataset_path=dataset_path, end=108)
 
     channel_selection_resnet18(
         data=data,
@@ -485,7 +486,7 @@ def main() -> None:
         strategy=strategy,
     )
     
-    calculate_resnet18_model_score("saves2/accuracies.txt")
+    # calculate_resnet18_model_score("saves2/accuracies.txt")
     # chosen_channels = [22, 23, 24]
 
     # prepare_and_save_user_data(
