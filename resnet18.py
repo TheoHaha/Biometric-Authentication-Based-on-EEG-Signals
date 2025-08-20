@@ -1,3 +1,4 @@
+from datetime import datetime
 import os
 
 import keras
@@ -115,16 +116,26 @@ def train_model_on_V(
         )
         
         # set up early stopping callback
-        early_stopping_callback = EarlyStopping(
-            monitor="val_loss",
-            mode="min",
-            start_from_epoch=5,
-            patience=3,
-            min_delta=0.0001,
-            baseline=0.001,
-            restore_best_weights=False,
-            verbose=1,
-        )
+        # early_stopping_callback = EarlyStopping(
+        #     monitor="categorical_accuracy",
+        #     mode="max",
+        #     start_from_epoch=5,
+        #     patience=3,
+        #     min_delta=0.001,
+        #     baseline=0.995,
+        #     restore_best_weights=False,
+        #     verbose=1,
+        # )
+        # early_stopping_callback = EarlyStopping(
+        #     monitor="val_loss",
+        #     mode="min",
+        #     start_from_epoch=5,
+        #     patience=5,
+        #     min_delta=0.001,
+        #     baseline=0.001,
+        #     restore_best_weights=False,
+        #     verbose=1,
+        # )
 
         if not checkpoint_exists(save_file_dir, chosen_channels):
             # if no existing checkpoints are found, create the model from scratch and set initial epoch to 0
@@ -149,11 +160,15 @@ def train_model_on_V(
             callbacks=[
                 checkpoint_callback,
                 del_checkpoint_callback,
-                early_stopping_callback,
+                # early_stopping_callback,
             ],
         )
     # pdb.set_trace()
+    stopped_epoch = stats.epoch[-1] + 1 if hasattr(stats, "epoch") else None
+    now = datetime.now().strftime("%d-%m-%Y, %H:%M:%S")
     return {
+        "datetime": now,
+        "stopped_epoch": stopped_epoch,
         "categorical_accuracy": stats.history["categorical_accuracy"][-1],
         "loss": stats.history["loss"][-1],
         "val_categorical_accuracy": stats.history["val_categorical_accuracy"][-1],
