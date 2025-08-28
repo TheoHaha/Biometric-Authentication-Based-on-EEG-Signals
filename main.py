@@ -328,6 +328,114 @@ def channel_selection_resnet18(
             break
 
 
+def channel_selection_tcn(
+    data, search_space, best_channels, strategy, acc_save_file
+) -> None:
+    # setting up orthogonal forward search for channels
+    # symbols as given in the algorithm
+    # symbol: E
+    # search_space = [25, 26, 28, 29]  # [c for c in range(20,C)]#[10,40,61]
+    # symbol: C
+    # best_channels = [22, 23, 24, 27]
+    # symbol: V
+    V = None
+    
+    # run the orthogonalization mechanism one time, in case we resume training with >1 best_channels
+    if len(best_channels) > 1:
+        print(f"Continuing training with channels {best_channels}")
+        first_channel = best_channels[0]
+        V = data[:, first_channel : first_channel + 1, :].copy()
+        for idx, channel in enumerate(best_channels):
+            if idx == 0:
+                continue
+            orth_tmp = orthogonalize(
+                data=data, k=channel, best_channels=[first_channel], V=V
+            )
+            V = np.concatenate([V, orth_tmp], axis=1)
+    elif len(best_channels) == 1:
+        V = data[:, best_channels, :].copy()
+    else:
+        V = []
+    # symbol: i
+    i = 0
+
+    # orthogonal forward search
+    acc = {0: 0}
+
+    keras.backend.clear_session()
+    while True:  # max(acc.values()) < 0.99:
+        acc = {}
+        tik_all = {}
+
+        # for every channel k in the E
+        print(f"Search space: {search_space}")
+        for k in search_space:
+            accuracy_on_K = 0
+            V_tmp = []
+            chosen_channels = []
+            # if i = 1
+            if len(best_channels) == 0:
+                chosen_channels = [k]
+                # tik = u_k
+                tik = data[:, chosen_channels, :].copy()
+                V_tmp = tik
+            else:
+                chosen_channels = best_channels.copy()
+                chosen_channels.append(k)
+
+                tik = orthogonalize(data, k, best_channels, V)
+
+                V_tmp = np.concatenate([V, tik], axis=1)
+                # tik = gram_schmidt(data[:, chosen_channels, :])
+            # pdb.set_trace()
+            V_tmp_data, V_tmp_labels = create_samples_and_labels(V_tmp, Gamma, D)
+            # print("V_data shape:", V_data.shape)
+            # print("V_labels shape:", V_labels.shape)
+            # pdb.set_trace()
+            print(f"Training on channel(s) {chosen_channels}")
+            accuracy_on_K = proposed_cnn.train_model_on_V(
+                V_tmp_data,
+                V_tmp_labels,
+                chosen_channels,
+                saves_path,
+                h,
+                T,
+                sliding_window_out,
+                strategy,
+            )
+            print(f"Accuracy on channel(s) {chosen_channels}: {accuracy_on_K}")
+
+            f = open(acc_save_file, "a")
+            f.write(f"{chosen_channels} : {accuracy_on_K}\n")
+            f.close()
+
+            acc[k] = accuracy_on_K
+            tik_all[k] = tik
+
+        values = np.array(list(acc.values()))
+        keys = np.array(list(acc.keys()))
+        k_star = int(keys[np.argmax(values)])
+
+        search_space.remove(k_star)
+        best_channels.append(k_star)
+        print(f"Best channels: {best_channels}")
+        print("==================================================")
+
+        V = (
+            tik_all[k_star]
+            if len(best_channels) == 0
+            else np.concatenate([V, tik_all[k_star]], axis=1)
+        )
+        i += 1
+
+        # TODO: better save & load
+        if len(best_channels) == 3:
+            return
+
+        if len(search_space) == 0:
+            break
+
+
 def calculate_resnet18_model_score(acc_save_file):
     # read the acc_save_file and calculate which channels are the best
     if os.path.exists(acc_save_file):
