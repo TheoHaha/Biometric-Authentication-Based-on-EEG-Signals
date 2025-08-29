@@ -13,8 +13,41 @@ from my_utils import checkpoint_exists, create_dataset, get_latest_epoch  # type
 
 ResNet18, preprocess_input = Classifiers.get("resnet18")
 
+# implement architecture from scratch
+def create_model(no_of_channels, no_of_subjects, h, T):
+    fingerprinting_layers = keras.Sequential(
+        [
+            keras.layers.Input(shape=(h, T, no_of_channels)),
+        ]
+    )
+    
+    id_layers = keras.Sequential(
+        [
+            keras.layers.Dense(1024, activation="relu"),
+            keras.layers.Dropout(rate=0.25),
+            keras.layers.Dense(no_of_subjects, activation="softmax"),
+        ]
+    )
 
-def create_model(no_of_subjects=90, h=20, T=160, trained=True):
+    model = keras.Sequential(
+        [
+            fingerprinting_layers,
+            id_layers,
+        ]
+    )
+    
+    optimizer = RMSprop(learning_rate=0.0001)
+    loss = CategoricalCrossentropy()
+    model.compile(
+        optimizer=optimizer,
+        loss=loss,
+        metrics=[
+            keras.metrics.CategoricalAccuracy(),
+        ],
+    )
+    return model
+
+def create_model_old(no_of_subjects=90, h=20, T=160, trained=True):
     weights = "imagenet" if trained else ""
     base_model = ResNet18(
         input_shape=(h, T, 3),

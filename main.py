@@ -13,7 +13,7 @@ from scipy.spatial import distance
 from sklearn.model_selection import train_test_split
 
 import proposed_cnn
-import resnet18
+import proposed_resnet18
 from my_utils import (
     create_dataset,
     create_samples_and_labels,
@@ -304,7 +304,7 @@ def channel_selection_resnet18(
             V_tmp_data, V_tmp_labels = create_samples_and_labels(V_tmp, Gamma, D)
             
             print(f"Training on channels {chosen_channels}")
-            stats_on_K = resnet18.train_model_on_V(
+            stats_on_K = proposed_resnet18.train_model_on_V(
                 V_tmp_data,
                 V_tmp_labels,
                 chosen_channels,
@@ -466,7 +466,7 @@ def train_and_save_resnet18_model(
     alpha_train_X, alpha_train_y, alpha_test_X, alpha_test_y, chosen_channels, strategy
 ) -> None:
     no_of_subjects = alpha_train_y.shape[1]
-    model = resnet18.create_model(no_of_subjects=no_of_subjects)
+    model = proposed_resnet18.create_model(no_of_subjects=no_of_subjects)
 
     dataset_train = create_dataset(
         alpha_train_X[:, chosen_channels, :],
