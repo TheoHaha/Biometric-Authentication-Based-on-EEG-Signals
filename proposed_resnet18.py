@@ -2,22 +2,65 @@ from datetime import datetime
 import os
 
 import keras
-import tensorflow as tf
-from classification_models.keras import Classifiers
-from keras.callbacks import EarlyStopping, ModelCheckpoint
+# import tensorflow as tf
+# from classification_models.keras import Classifiers
+from keras.callbacks import EarlyStopping, ModelCheckpoint  # noqa: F401
 from keras.losses import CategoricalCrossentropy
 from keras.optimizers import RMSprop
 from sklearn.model_selection import train_test_split
 
 from my_utils import checkpoint_exists, create_dataset, get_latest_epoch  # type:ignore
 
-ResNet18, preprocess_input = Classifiers.get("resnet18")
+# ResNet18, preprocess_input = Classifiers.get("resnet18")
 
-# implement architecture from scratch
+# implementing residual blocks from scratch
+class ResidualLayer(keras.layers.Layer):
+    def __init__(self, filters, first_stride=1, simplify=False):
+        super().__init__()
+        
+        self.__filters = filters
+        self.__simplify = simplify
+        
+        first_padding = 'same'
+        if first_stride != 1:
+            first_padding = 'valid'
+        
+        self.conv_sequence = keras.Sequential([
+            keras.layers.Conv2D(filters, (3, 3), padding=first_padding, strides=first_stride),
+            keras.layers.BatchNormalization(),
+            keras.layers.Activation('relu'),
+            keras.layers.Conv2D(filters, (3, 3), padding='same'),
+            keras.layers.BatchNormalization(),
+        ])
+
+    def call(self, inputs):
+        x_skip = inputs
+        x = self.conv_sequence(inputs)
+        if x.shape == x_skip.shape:
+            x = keras.layers.Add([x, x_skip])
+        elif not self.__simplify:
+            x_skip = keras.layers.Conv2D(self.__filters, (1, 1), strides=(2, 2))(x_skip)
+            x = keras.layers.Add([x, x_skip])
+        x = keras.layers.Activation('relu')(x)
+        return x
+
 def create_model(no_of_channels, no_of_subjects, h, T):
+    simplify = True
     fingerprinting_layers = keras.Sequential(
         [
             keras.layers.Input(shape=(h, T, no_of_channels)),
+            keras.layers.Conv2D(64, (7, 7), strides=(2, 2), padding="valid"),
+            keras.layers.MaxPool2D(pool_size=(3, 3), strides=(2, 2), padding="valid"),
+            ResidualLayer(64, simplify=simplify),
+            ResidualLayer(64, simplify=simplify),
+            ResidualLayer(128, first_stride=2, simplify=simplify),
+            ResidualLayer(128, simplify=simplify),
+            ResidualLayer(256, first_stride=2, simplify=simplify),
+            ResidualLayer(256, simplify=simplify),
+            ResidualLayer(512, first_stride=2, simplify=simplify),
+            ResidualLayer(512, simplify=simplify),
+            keras.layers.GlobalAveragePooling2D(),
+            keras.layers.Flatten(),
         ]
     )
     
@@ -49,7 +92,7 @@ def create_model(no_of_channels, no_of_subjects, h, T):
 
 def create_model_old(no_of_subjects=90, h=20, T=160, trained=True):
     weights = "imagenet" if trained else ""
-    base_model = ResNet18(
+    base_model = ResNet18(  # noqa: F821
         input_shape=(h, T, 3),
         weights=weights,
         classes=no_of_subjects,
@@ -178,7 +221,7 @@ def train_model_on_V(
         else:
             # if we find checkpoints, pick up where we left off
             latest_epoch, model_dir = get_latest_epoch(save_file_dir, chosen_channels)
-            model = tf.keras.models.load_model(model_dir)
+            model = keras.models.load_model(model_dir)
             print(f"loaded model from {model_dir}")
             print(f"resuming training from epoch {latest_epoch + 1}")
 
