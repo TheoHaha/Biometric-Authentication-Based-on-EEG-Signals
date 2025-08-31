@@ -141,6 +141,30 @@ def orthogonalize(data, k, best_channels, V):
     return tik
 
 
+# Method for orthogonalizing channels one by one in order
+def orthogonalize_channels(data, channels):
+    """Orthogonalize channels one by one in order.
+
+    Args:
+        data (NDArray): the input data array
+        channels (list): the ordered list of channels to orthogonalize
+
+    Returns:
+        NDArray: the orthogonalized data
+    """
+    first_channel = channels[0]
+    tmp = data[:, first_channel : first_channel + 1, :].copy()
+    for idx, channel in enumerate(channels):
+        if idx == 0:
+            continue
+        orth_tmp = orthogonalize(
+            data=data, k=channel, best_channels=[first_channel], V=tmp
+        )
+        tmp = np.concatenate([tmp, orth_tmp], axis=1)
+    return tmp
+
+
+
 def orthogonalize_data(data):
     """Orthogonalize any given subset of data.
 
