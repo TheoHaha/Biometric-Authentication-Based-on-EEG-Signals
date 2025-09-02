@@ -1,14 +1,15 @@
 import ast
 import os
 import re
+from datetime import datetime
 from itertools import permutations
 from typing import Callable
 
 import keras
-from keras.callbacks import EarlyStopping
 import mne
 import numpy as np
 import tensorflow as tf
+from keras.callbacks import EarlyStopping
 from scipy.spatial import distance
 from sklearn.model_selection import train_test_split
 
@@ -20,7 +21,9 @@ from my_utils import (
     fast_minmax_scale,
     get_absolute_paths,
     orthogonalize,
+    orthogonalize_channels,
     orthogonalize_data,
+    read_acc_file,
     sliding_window,
 )
 from user_authentication import EEGAuthenticator
@@ -41,7 +44,7 @@ n = 90
 
 # paths
 dataset_path = "dataset/"
-saves_path = "saves2/"
+saves_path = "saves/"
 
 
 def load_data(dataset_path, start=0, end=n):
@@ -252,9 +255,118 @@ def channel_selection_CNN(
             break
 
 
-def channel_selection_resnet18(
-    data, search_space, strategy, acc_save_file
-) -> None:
+def channel_selection_resnet18(data, search_space, strategy, acc_save_file) -> None:
+    # setting up orthogonal forward search for channels
+    # symbols as given in the algorithm
+    # symbol: E
+    # search_space = [25, 26, 28, 29]  # [c for c in range(20,C)]#[10,40,61]
+    # symbol: C
+    # best_channels = [22, 23, 24, 27]
+    # symbol: V
+    V = None
+    # Detect already checked channels from acc_save_file
+    best_channels, checked_channels = read_acc_file(acc_save_file)
+    
+    # run the orthogonalization mechanism one time, in case we resume training with >1 best_channels
+    if len(best_channels) > 1:
+        print(f"Continuing training with channels {best_channels}")
+        first_channel = best_channels[0]
+        V = data[:, first_channel : first_channel + 1, :].copy()
+        for idx, channel in enumerate(best_channels):
+            if idx == 0:
+                continue
+            orth_tmp = orthogonalize(
+                data=data, k=channel, best_channels=[first_channel], V=V
+            )
+            V = np.concatenate([V, orth_tmp], axis=1)
+    elif len(best_channels) == 1:
+        V = data[:, best_channels, :].copy()
+    else:
+        V = []
+    
+    # remove checked_channels from search_space
+    search_space = set(search_space)
+    search_space = search_space.difference(checked_channels)
+    
+    # symbol: i
+    i = 0
+
+    # orthogonal forward search
+    acc = {0: 0}
+
+    keras.backend.clear_session()
+    while len(search_space) > 0 and len(best_channels) < 10 and max(acc.values()) < 0.9999:
+        acc = {}
+        tik_all = {}
+
+        # for every channel k in the E
+        print(f"Search space: {search_space}")
+        for k in search_space:
+            stats_on_K = 0
+            V_tmp = []
+            chosen_channels = []
+            # if i = 1
+            if len(best_channels) == 0:
+                chosen_channels = [k]
+                # tik = u_k
+                tik = data[:, chosen_channels, :].copy()
+                V_tmp = tik
+            else:
+                chosen_channels = best_channels.copy()
+                chosen_channels.append(k)
+
+                tik = orthogonalize(data, k, best_channels, V)
+
+                V_tmp = np.concatenate([V, tik], axis=1)
+                # tik = gram_schmidt(data[:, chosen_channels, :])
+            # pdb.set_trace()
+            V_tmp_data, V_tmp_labels = create_samples_and_labels(V_tmp, Gamma, D)
+            # print("V_data shape:", V_data.shape)
+            # print("V_labels shape:", V_labels.shape)
+            # pdb.set_trace()
+            print(f"Training on channel(s) {chosen_channels}")
+            stats_on_K = proposed_resnet18.train_model_on_V(
+                V_tmp_data,
+                V_tmp_labels,
+                chosen_channels,
+                saves_path,
+                h,
+                T,
+                sliding_window_out,
+                strategy,
+            )
+            print(f"Stats on channel(s) {chosen_channels} : {stats_on_K}")
+
+            with open(acc_save_file, "a") as f:
+                f.write(f"{chosen_channels} : {stats_on_K}\n")
+
+            acc[k] = stats_on_K.get("categorical_accuracy")
+            tik_all[k] = tik
+
+        values = np.array(list(acc.values()))
+        keys = np.array(list(acc.keys()))
+        k_star = int(keys[np.argmax(values)])
+
+        search_space.remove(k_star)
+        best_channels.append(k_star)
+        print(f"Best channel(s): {best_channels}")
+        with open(acc_save_file, "a") as f:
+            f.write(f"Best channel(s) : {best_channels}\n")
+        print("==================================================")
+
+        V = (
+            tik_all[k_star]
+            if len(best_channels) == 1
+            else np.concatenate([V, tik_all[k_star]], axis=1)
+        )
+        i += 1
+
+        # TODO: better save & load
+        # if len(best_channels) == 3:
+        #     return
+
+
+def channel_selection_resnet18_old(data, search_space, strategy, acc_save_file) -> None:
     # Detect already checked permutations from acc_save_file
     checked_permutations = set()
     print("Checking for already checked permutations in accuracy file...")
@@ -272,23 +384,14 @@ def channel_selection_resnet18(
                         print(e)
                         continue
     print(f"Found {len(checked_permutations)} checked permutations")
-    
-    # Method for orthogonalizing channels one by one in order
-    def orthogonalize_channels(channels):
-        first_channel = channels[0]
-        tmp = data[:, first_channel : first_channel + 1, :].copy()
-        for idx, channel in enumerate(channels):
-            if idx == 0:
-                continue
-            orth_tmp = orthogonalize(
-                data=data, k=channel, best_channels=[first_channel], V=tmp
-            )
-            tmp = np.concatenate([tmp, orth_tmp], axis=1)
-        return tmp
 
-    search_space_P = sorted([
-        p for p in permutations(search_space, 3) if tuple(p) not in checked_permutations
-    ])
+    search_space_P = sorted(
+        [
+            p
+            for p in permutations(search_space, 3)
+            if tuple(p) not in checked_permutations
+        ]
+    )
     # symbol: i
     i = 0
 
@@ -300,9 +403,9 @@ def channel_selection_resnet18(
             V_tmp = []
             chosen_channels = list(k)
 
-            V_tmp = orthogonalize_channels(k)
+            V_tmp = orthogonalize_channels(data, k)
             V_tmp_data, V_tmp_labels = create_samples_and_labels(V_tmp, Gamma, D)
-            
+
             print(f"Training on channels {chosen_channels}")
             stats_on_K = proposed_resnet18.train_model_on_V(
                 V_tmp_data,
@@ -321,7 +424,7 @@ def channel_selection_resnet18(
 
             search_space_P.remove(k)
             print("==================================================")
-            
+
         i += 1
 
         if len(search_space_P) == 0:
@@ -339,7 +442,7 @@ def channel_selection_tcn(
     # best_channels = [22, 23, 24, 27]
     # symbol: V
     V = None
-    
+
     # run the orthogonalization mechanism one time, in case we resume training with >1 best_channels
     if len(best_channels) > 1:
         print(f"Continuing training with channels {best_channels}")
@@ -449,7 +552,12 @@ def calculate_resnet18_model_score(acc_save_file):
                     metrics_str = match.group(2)
                     channels = ast.literal_eval(f"[{channels_str}]")
                     metrics = ast.literal_eval(metrics_str)
-                    score = calculate_score(metrics["categorical_accuracy"], metrics["val_categorical_accuracy"], metrics["loss"], metrics["val_loss"])
+                    score = calculate_score(
+                        metrics["categorical_accuracy"],
+                        metrics["val_categorical_accuracy"],
+                        metrics["loss"],
+                        metrics["val_loss"],
+                    )
                     scores[tuple(channels)] = score
             print(scores)
             best_channels = max(scores, key=scores.get)
@@ -493,7 +601,7 @@ def train_and_save_resnet18_model(
         #     restore_best_weights=False,
         #     verbose=1,
         # )
-        
+
         model.fit(
             x=dataset_train,
             validation_data=dataset_test,
@@ -510,28 +618,43 @@ def train_and_save_resnet18_model(
 
 def full_train_resnet18_model(data, strategy) -> None:
     # with strategy.scope():
-    data = orthogonalize_data(data)
-    # model = resnet18.create_model(data.shape[0])
+    # data = orthogonalize_data(data)
+    model = proposed_resnet18.create_model(
+        no_of_channels=data.shape[1], no_of_subjects=data.shape[0], h=h, T=T
+    )
+    # model.summary()
     # print(data.shape)
     samples, labels = create_samples_and_labels(data, Gamma, D)
-    print(samples.shape)
+    # samples = tf.cast(samples, tf.float32)
+    # print(samples.shape)
     train_X, test_X, train_y, test_y = train_test_split(
-        samples.numpy(), labels.numpy(), test_size=0.2, shuffle=False
+        samples.numpy(), labels.numpy(), test_size=0.2, shuffle=True
     )
-    print(train_X.shape)
-
-    # dataset_train = create_dataset(train_X, train_y, sliding_window_out, strategy)
+    # print(train_X.shape)
+    # dataset = create_dataset(samples, labels, sliding_window_out, strategy)
+    dataset_train = create_dataset(train_X, train_y, sliding_window_out, strategy)
     # print([e for e in dataset_train.take(1)])
-    # dataset_test = create_dataset(test_X, test_y, sliding_window_out, strategy)
-
-    # stats = model.fit(
-    #     x=dataset_train,
-    #     validation_data=dataset_test,
-    #     epochs=30,
-    #     steps_per_epoch=None,
-    #     validation_steps=None,
-    #     verbose=1,
-    # )
+    dataset_test = create_dataset(test_X, test_y, sliding_window_out, strategy)
+    
+    before = datetime.now()
+    stats = model.fit(
+        x=dataset_train,
+        validation_data=dataset_test,
+        epochs=30,
+        steps_per_epoch=None,
+        validation_steps=None,
+        verbose=1,
+    )
+    now = datetime.now()
+    time_elapsed = str(now - before)
+    results = {
+        "time_elapsed": time_elapsed,
+        "categorical_accuracy": stats.history["categorical_accuracy"][-1],
+        "loss": stats.history["loss"][-1],
+        "val_categorical_accuracy": stats.history["val_categorical_accuracy"][-1],
+        "val_loss": stats.history["val_loss"][-1],
+    }
+    print(results)
     print("==============================================")
     print("Job done")
     # print(stats)
@@ -586,14 +709,16 @@ def get_all_test_user_samples(user_i: int, test_X, test_y):
 def main() -> None:
     strategy = tf.distribute.get_strategy()
     data = load_data(dataset_path=dataset_path, end=108)
+    
+    # full_train_resnet18_model(data=data, strategy=strategy)
 
     channel_selection_resnet18(
         data=data,
-        search_space=list(range(22, 30)),
-        acc_save_file="saves2/accuracies.txt",
+        search_space=list(range(64)),
+        acc_save_file=os.path.join(saves_path, "/resnet18_accuracies.txt"),
         strategy=strategy,
     )
-    
+
     # calculate_resnet18_model_score("saves2/accuracies.txt")
     # chosen_channels = [22, 23, 24]
 
@@ -612,7 +737,6 @@ def main() -> None:
     # alpha_test_X = np.load("user_data/alpha_test_X.npy")
     # alpha_test_y = np.load("user_data/alpha_test_y.npy")
 
-    # full_train_resnet18_model(data=load_data(dataset_path, start=0, end=108), strategy=strategy)
     # print(f"{alpha_test_X.shape}, {alpha_test_y.shape}")
 
     # authenticator = EEGAuthenticator(

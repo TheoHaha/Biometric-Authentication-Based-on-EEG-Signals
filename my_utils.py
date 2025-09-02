@@ -1,9 +1,10 @@
+import ast
+import json
 import os
 import re
 
 import numpy as np
 import tensorflow as tf
-
 from scipy.spatial import distance
 
 print(f"Using {__name__}")
@@ -13,6 +14,7 @@ print(f"Using {__name__}")
 # this is the same function that was applied to the dataset during preprocessing
 @tf.function(reduce_retracing=True)
 def sliding_window(tensor, window_size, step):
+    # tensor = tf.cast(tensor, tf.float32)
     frames = tf.signal.frame(tensor, window_size, step, axis=-1)
     return frames
 
@@ -126,6 +128,49 @@ def create_samples_and_labels(data, Gamma, D):
     return out_data, out_labels
 
 
+def read_acc_file(acc_save_file):
+    checked_channels = set()
+    best_channels = []
+    
+    print("Looking for save file...")
+    if not os.path.exists(acc_save_file):
+        print("Save file not found")
+        return [], []
+    print("Save file found!")
+    
+    print("Reading save file for already checked channels and found best channels...")
+    with open(acc_save_file, "r") as f:
+        for line in f:
+            # Each line format: "[channels] : stats"
+            match_channels_and_stats = re.match(r"\[(.*?)\]\s*:\s*\{(.*?)\}", line)
+            match_best_channels = re.match(r"Best channel\(s\) :\s*\[(.*?)\]", line)
+            
+            # ignore lines that don't match with either regex
+            if not match_channels_and_stats and not match_best_channels:
+                continue
+            
+            channels_str = match_channels_and_stats.group(1) if match_channels_and_stats else match_best_channels.group(1)
+            try:
+                channels = ast.literal_eval(f"[{channels_str}]") # yes I know it's unsafe
+                
+                # if we reach a best channels line, that means we've exhausted the search space once
+                # therefore, clear checked channels set
+                if match_best_channels:
+                    best_channels = channels
+                    checked_channels.clear()
+                
+                for c in channels:
+                    checked_channels.add(c)
+
+            except Exception as e:
+                print(e)
+                continue
+    
+    print(f"Found {len(checked_channels)} checked channels")
+    print(f"Best channels found: {best_channels}")
+    return best_channels, checked_channels
+
+
 def orthogonalize(data, k, best_channels, V):
     tik = data[:, k : k + 1, :].copy()
     for j, _ in enumerate(best_channels):
@@ -162,7 +207,6 @@ def orthogonalize_channels(data, channels):
         )
         tmp = np.concatenate([tmp, orth_tmp], axis=1)
     return tmp
-
 
 
 def orthogonalize_data(data):
