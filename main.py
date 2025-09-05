@@ -9,13 +9,14 @@ import keras
 import mne
 import numpy as np
 import tensorflow as tf
-from keras.callbacks import EarlyStopping
+from keras.callbacks import EarlyStopping # noqa: F401
 from scipy.spatial import distance
 from sklearn.model_selection import train_test_split
 
 import proposed_cnn
 import proposed_resnet18
 from my_utils import (
+    calculate_model_score_from_stats,
     create_dataset,
     create_samples_and_labels,
     fast_minmax_scale,
@@ -24,9 +25,12 @@ from my_utils import (
     orthogonalize_channels,
     orthogonalize_data,
     read_acc_file,
+    read_all_scores,
     sliding_window,
 )
 from user_authentication import EEGAuthenticator
+
+keras.mixed_precision.set_global_policy('mixed_float16')
 
 ## GLOBAL PARAMETERS
 # sliding window parameters
@@ -44,7 +48,7 @@ n = 90
 
 # paths
 dataset_path = "dataset/"
-saves_path = "saves/"
+saves_path = "saves2"
 
 
 def load_data(dataset_path, start=0, end=n):
@@ -126,17 +130,6 @@ def prepare_and_save_user_data(
         save_user_data(beta_X, "beta_X")
         save_user_data(beta_y, "beta_y")
     print(f"Data saved in {save_dir}")
-
-
-# TODO: implement this
-def load_accuracy_data(accuracy_data_path):
-    regex = r"\[.+\]"
-    acc_file = open(accuracy_data_path, "r")
-
-    acc_data_str = acc_file.read()
-    acc_file.close()
-
-    print(re.findall(regex, acc_data_str))
 
 
 # sliding window routine
@@ -265,7 +258,7 @@ def channel_selection_resnet18(data, search_space, strategy, acc_save_file) -> N
     # symbol: V
     V = None
     # Detect already checked channels from acc_save_file
-    best_channels, checked_channels = read_acc_file(acc_save_file)
+    best_channels, checked_channels, scores_loaded = read_acc_file(acc_save_file)
     
     # run the orthogonalization mechanism one time, in case we resume training with >1 best_channels
     if len(best_channels) > 1:
@@ -285,23 +278,42 @@ def channel_selection_resnet18(data, search_space, strategy, acc_save_file) -> N
         V = []
     
     # remove checked_channels from search_space
-    search_space = set(search_space)
-    search_space = search_space.difference(checked_channels)
+    search_space_ = set(search_space)
+    search_space_ = search_space_.difference(checked_channels)
     
     # symbol: i
     i = 0
-
+    scores = {0: 0} if not scores_loaded else scores_loaded.copy()
+    
+    # after loading the file, if search space is empty we assume that we've exhausted it
+    # w/o finding the best channels
+    if len(search_space_) == 0:
+        values = np.array(list(scores.values()))
+        keys = np.array(list(scores.keys()))
+        k_star = int(keys[np.argmax(values)])
+        
+        scores.clear()
+        scores = {0: 0}
+        
+        search_space_.remove(k_star)
+        best_channels.append(k_star)
+        
+        with open(acc_save_file, "a") as f:
+            f.write(f"Best channel(s) : {best_channels}\n")
+        search_space_ = set(search_space)
+    
     # orthogonal forward search
-    acc = {0: 0}
-
-    keras.backend.clear_session()
-    while len(search_space) > 0 and len(best_channels) < 10 and max(acc.values()) < 0.9999:
-        acc = {}
+    while len(best_channels) < 3: #and max(acc.values()) < 0.9999:
+        if not scores_loaded:
+            scores.clear()
+        
         tik_all = {}
 
         # for every channel k in the E
-        print(f"Search space: {search_space}")
-        for k in search_space:
+        print(f"Search space: {search_space_}")
+        for k in search_space_:
+            keras.backend.clear_session()
+            
             stats_on_K = 0
             V_tmp = []
             chosen_channels = []
@@ -340,14 +352,18 @@ def channel_selection_resnet18(data, search_space, strategy, acc_save_file) -> N
             with open(acc_save_file, "a") as f:
                 f.write(f"{chosen_channels} : {stats_on_K}\n")
 
-            acc[k] = stats_on_K.get("categorical_accuracy")
+            scores[k] = calculate_model_score_from_stats(stats_on_K)
             tik_all[k] = tik
+            print(f"Score on channel(s) {chosen_channels}: {scores[k]}")
+            print("-------------------------------------------------")
 
-        values = np.array(list(acc.values()))
-        keys = np.array(list(acc.keys()))
+        values = np.array(list(scores.values()))
+        keys = np.array(list(scores.keys()))
         k_star = int(keys[np.argmax(values)])
-
-        search_space.remove(k_star)
+        
+        scores.clear()
+        
+        search_space_.remove(k_star)
         best_channels.append(k_star)
         print(f"Best channel(s): {best_channels}")
         with open(acc_save_file, "a") as f:
@@ -360,10 +376,6 @@ def channel_selection_resnet18(data, search_space, strategy, acc_save_file) -> N
             else np.concatenate([V, tik_all[k_star]], axis=1)
         )
         i += 1
-
-        # TODO: better save & load
-        # if len(best_channels) == 3:
-        #     return
 
 
 def channel_selection_resnet18_old(data, search_space, strategy, acc_save_file) -> None:
@@ -539,37 +551,6 @@ def channel_selection_tcn(
             break
 
 
-def calculate_resnet18_model_score(acc_save_file):
-    # read the acc_save_file and calculate which channels are the best
-    if os.path.exists(acc_save_file):
-        with open(acc_save_file, "r") as f:
-            lines = f.readlines()
-            scores = {}
-            for line in lines:
-                match = re.match(r"\[(.*?)\]\s*:\s*(\{.*\})", line)
-                if match:
-                    channels_str = match.group(1)
-                    metrics_str = match.group(2)
-                    channels = ast.literal_eval(f"[{channels_str}]")
-                    metrics = ast.literal_eval(metrics_str)
-                    score = calculate_score(
-                        metrics["categorical_accuracy"],
-                        metrics["val_categorical_accuracy"],
-                        metrics["loss"],
-                        metrics["val_loss"],
-                    )
-                    scores[tuple(channels)] = score
-            print(scores)
-            best_channels = max(scores, key=scores.get)
-            print(f"Best channels: {best_channels} with score {scores[best_channels]}")
-            return list(best_channels), scores[best_channels]
-
-
-def calculate_score(categorical_accuracy, val_categorical_accuracy, loss, val_loss):
-    score = 1e-6 * (categorical_accuracy + val_categorical_accuracy) / (loss + val_loss)
-    return score
-
-
 def train_and_save_resnet18_model(
     alpha_train_X, alpha_train_y, alpha_test_X, alpha_test_y, chosen_channels, strategy
 ) -> None:
@@ -711,14 +692,15 @@ def main() -> None:
     data = load_data(dataset_path=dataset_path, end=108)
     
     # full_train_resnet18_model(data=data, strategy=strategy)
-
+    
     channel_selection_resnet18(
         data=data,
-        search_space=list(range(64)),
-        acc_save_file=os.path.join(saves_path, "/resnet18_accuracies.txt"),
+        search_space_=list(range(64)),
+        acc_save_file=os.path.join(saves_path, "resnet18_accuracies.txt"),
         strategy=strategy,
     )
 
+    # read_all_scores(acc_save_file=os.path.join(saves_path, "resnet18_accuracies.txt"))
     # calculate_resnet18_model_score("saves2/accuracies.txt")
     # chosen_channels = [22, 23, 24]
 
