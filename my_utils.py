@@ -1,5 +1,6 @@
 import ast
 import json
+import math
 import os
 import re
 
@@ -131,44 +132,131 @@ def create_samples_and_labels(data, Gamma, D):
 def read_acc_file(acc_save_file):
     checked_channels = set()
     best_channels = []
-    
+    acc_stats = {}
+
     print("Looking for save file...")
     if not os.path.exists(acc_save_file):
         print("Save file not found")
-        return [], []
+        return [], [], None
     print("Save file found!")
-    
+
     print("Reading save file for already checked channels and found best channels...")
     with open(acc_save_file, "r") as f:
         for line in f:
             # Each line format: "[channels] : stats"
             match_channels_and_stats = re.match(r"\[(.*?)\]\s*:\s*\{(.*?)\}", line)
             match_best_channels = re.match(r"Best channel\(s\) :\s*\[(.*?)\]", line)
-            
+
             # ignore lines that don't match with either regex
             if not match_channels_and_stats and not match_best_channels:
                 continue
-            
-            channels_str = match_channels_and_stats.group(1) if match_channels_and_stats else match_best_channels.group(1)
+
+            channels_str = (
+                match_channels_and_stats.group(1)
+                if match_channels_and_stats
+                else match_best_channels.group(1)
+            )
+            stats_str = (
+                match_channels_and_stats.group(2) if match_channels_and_stats else ""
+            )
             try:
-                channels = ast.literal_eval(f"[{channels_str}]") # yes I know it's unsafe
-                
+                channels = ast.literal_eval(
+                    f"[{channels_str}]"
+                )  # yes I know it's unsafe
+
+                # prepare the acc dictionary when we finish loading so we can judge all seen channels
+                if match_channels_and_stats:
+                    stats_str = stats_str.replace("'", '"')
+                    stats = json.loads("{" + stats_str + "}")
+                    acc_stats[channels[-1]] = calculate_model_score_from_stats(stats)
+
                 # if we reach a best channels line, that means we've exhausted the search space once
                 # therefore, clear checked channels set
                 if match_best_channels:
                     best_channels = channels
                     checked_channels.clear()
-                
+                    acc_stats.clear()
+
                 for c in channels:
                     checked_channels.add(c)
 
             except Exception as e:
-                print(e)
-                continue
-    
+                raise e
+
     print(f"Found {len(checked_channels)} checked channels")
     print(f"Best channels found: {best_channels}")
-    return best_channels, checked_channels
+    return best_channels, checked_channels, acc_stats
+
+
+def calculate_model_score(
+    categorical_accuracy,
+    val_categorical_accuracy,
+    loss,
+    val_loss,
+    stopped_epoch,
+    max_epochs,
+):
+    power = (0.1 * loss + 0.1 * val_loss) / (categorical_accuracy + val_categorical_accuracy)
+    epoch_factor = 0.1 * math.cos(stopped_epoch * math.pi / (2 * max_epochs)) + 1
+    score = math.exp(-power) * epoch_factor
+    return score
+
+
+def calculate_model_score_from_stats(stats):
+    categorical_accuracy = stats.get("categorical_accuracy")
+    val_categorical_accuracy = stats.get("val_categorical_accuracy")
+    loss = stats.get("loss")
+    val_loss = stats.get("val_loss")
+    stopped_epoch = stats.get("stopped_epoch")
+    max_epochs = 50
+
+    score = calculate_model_score(
+        categorical_accuracy,
+        val_categorical_accuracy,
+        loss,
+        val_loss,
+        stopped_epoch,
+        max_epochs,
+    )
+    return score
+
+
+def read_all_scores(acc_save_file):
+    print("Looking for save file...")
+    if not os.path.exists(acc_save_file):
+        print("Save file not found")
+        return [], [], None
+    print("Save file found!")
+
+    best_score = 0.0
+    best_chan = None
+    # print("Reading save file...")
+    with open(acc_save_file, "r") as f:
+        for line in f:
+            # Each line format: "[channels] : stats"
+            match_channels_and_stats = re.match(r"\[(.*?)\]\s*:\s*\{(.*?)\}", line)
+
+            # ignore lines that don't match with either regex
+            if not match_channels_and_stats:
+                continue
+
+            channels_str = match_channels_and_stats.group(1)
+            stats_str = (
+                match_channels_and_stats.group(2) if match_channels_and_stats else ""
+            )
+            try:
+                # channels = ast.literal_eval(f"[{channels_str}]") # yes I know it's unsafe
+                stats_str = stats_str.replace("'", '"')
+                stats = json.loads("{" + stats_str + "}")
+                score = calculate_model_score_from_stats(stats)
+
+                if score > best_score:
+                    best_score = score
+                    best_chan = channels_str
+                print(f"Channel(s) {channels_str}: {score}")
+            except Exception as e:
+                raise e
+    print(f"Best channel(s) is/are {best_chan} with a score of {best_score}")
 
 
 def orthogonalize(data, k, best_channels, V):
@@ -245,8 +333,10 @@ def create_dataset(data, labels, sliding_window_out, strategy):
     labels = tf.convert_to_tensor(labels, dtype=tf.int8)
     with strategy.scope():
         dataset = tf.data.Dataset.from_tensor_slices((data, labels))
+        dataset = dataset.cache()
+        dataset = dataset.prefetch(tf.data.AUTOTUNE)
         dataset = dataset.map(sliding_window_out, num_parallel_calls=tf.data.AUTOTUNE)
-        dataset = dataset.batch(64, drop_remainder=True)
+        dataset = dataset.batch(128, drop_remainder=True)
         # dataset = dataset.prefetch(64)
     return dataset
 
