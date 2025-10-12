@@ -183,10 +183,10 @@ def read_acc_file(acc_save_file):
             except Exception as e:
                 raise e
 
+    checked_channels = checked_channels.difference(best_channels)
     print(f"Found {len(checked_channels)} checked channels")
     print(f"Best channels found: {best_channels}")
     return best_channels, checked_channels, acc_stats
-
 
 def calculate_model_score(
     categorical_accuracy,
@@ -196,9 +196,11 @@ def calculate_model_score(
     stopped_epoch,
     max_epochs,
 ):
-    power = (0.1 * loss + 0.1 * val_loss) / (categorical_accuracy + val_categorical_accuracy)
-    epoch_factor = 0.1 * math.cos(stopped_epoch * math.pi / (2 * max_epochs)) + 1
-    score = math.exp(-power) * epoch_factor
+    accuracy_factor = val_categorical_accuracy
+    loss_factor = val_loss
+    # power = accuracy_factor * loss_factor
+    epoch_factor = 0.3 * math.cos(stopped_epoch * math.pi / (2 * max_epochs)) + 1
+    score = (accuracy_factor + 1 - loss_factor) * epoch_factor
     return score
 
 
@@ -225,11 +227,10 @@ def read_all_scores(acc_save_file):
     print("Looking for save file...")
     if not os.path.exists(acc_save_file):
         print("Save file not found")
-        return [], [], None
+        raise FileNotFoundError(f"File {acc_save_file} not found")
     print("Save file found!")
 
-    best_score = 0.0
-    best_chan = None
+    scores = {}
     # print("Reading save file...")
     with open(acc_save_file, "r") as f:
         for line in f:
@@ -250,14 +251,27 @@ def read_all_scores(acc_save_file):
                 stats = json.loads("{" + stats_str + "}")
                 score = calculate_model_score_from_stats(stats)
 
-                if score > best_score:
-                    best_score = score
-                    best_chan = channels_str
-                print(f"Channel(s) {channels_str}: {score}")
+                scores[channels_str] = score
+                # print(f"Channel(s) {channels_str}: {score}")
             except Exception as e:
                 raise e
-    print(f"Best channel(s) is/are {best_chan} with a score of {best_score}")
-
+            
+    leaderboard_size = 3
+    top_channels = sorted(scores, key=scores.get, reverse=True)[:leaderboard_size]
+    print(f"Top {len(top_channels)} channels:")
+    for chan in top_channels:
+        print(f"Channel(s) [{chan}]: {scores[chan]}")
+    bottom_channels = sorted(scores, key=scores.get)[:leaderboard_size]
+    print(f"Bottom {len(bottom_channels)} channels:")
+    for chan in bottom_channels:
+        print(f"Channel(s) [{chan}]: {scores[chan]}")
+    
+    best_chan = max(scores, key=scores.get)
+    best_score = scores[best_chan]
+    worst_chan = min(scores, key=scores.get)
+    worst_score = scores[worst_chan]
+    print(f"Best channel(s) is/are [{best_chan}] with a score of {best_score}")
+    print(f"Worst channel(s) is/are [{worst_chan}] with a score of {worst_score}")
 
 def orthogonalize(data, k, best_channels, V):
     tik = data[:, k : k + 1, :].copy()

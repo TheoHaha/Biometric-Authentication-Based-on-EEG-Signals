@@ -1,13 +1,29 @@
+import random
+import keras
 import matplotlib.pyplot as plt
 import numpy as np
 import tensorflow as tf
 from alive_progress import alive_bar
 from scipy.spatial.distance import cdist
+from sklearn.metrics import (
+    det_curve,
+    accuracy_score,
+    precision_score,
+    recall_score,
+    ConfusionMatrixDisplay,
+)
 
 from my_utils import sliding_window
 
 
 def get_fingerprinting_from_model(model):
+    if isinstance(model, str):
+        model = keras.models.load_model(model)
+    elif isinstance(model, keras.Model):
+        pass
+    else:
+        raise ValueError("model must be a file path or a keras.Model instance")
+
     fingerprinting_model = model.layers[0]
     return fingerprinting_model
 
@@ -17,7 +33,7 @@ class EEGAuthenticator:
         self,
         user_data,
         user_labels,
-        model,
+        model: str | keras.Model,
         Gamma: int,
         D: int,
         T: int,
@@ -48,64 +64,20 @@ class EEGAuthenticator:
         dist = distance_fn(fp_a, fp_s)
         return dist, dist <= threshold
 
-    def get_fingerprint_of_user_i(self, i: int) -> np.ndarray:
-        # a = self.__get_data_ready_for_fingerprinting(A)
+    def get_fingerprint_of_user_i(self, i: int, n=1) -> np.ndarray:
         a = self.__get_all_user_samples(i)
+        a = random.sample(list(a), n)  # use n random samples to get fingerprint
+        a = np.array(a)
         a = self.__get_data_ready_for_fingerprinting(a)
-        fp_a = np.mean(self.fingerprint_fn(a), axis=0)
+        fp_a = self.fingerprint_fn(a)
         return fp_a
 
-    def get_fingerprint_from_data(self, data: np.ndarray) -> np.ndarray:
-        s = self.__get_data_ready_for_fingerprinting(data)
-        fp_s = np.mean(self.fingerprint_fn(s), axis=0)
-        return fp_s
-
-    def calculate_cdist(self, A, S, distance_fn):
-        if isinstance(A, int):
-            a = self.__get_all_user_samples(A)
-            a = self.__get_data_ready_for_fingerprinting(a)
-        else:
-            a = self.__get_data_ready_for_fingerprinting(A)
-
-        if isinstance(S, int):
-            s = self.__get_all_user_samples(S)
-            s = self.__get_data_ready_for_fingerprinting(s)
-        else:
-            s = self.__get_data_ready_for_fingerprinting(S)
-
-        # min_samples = min(len(a), len(s))
-        # a = np.array(a)[self.__rs.choice(len(a), min_samples, replace=False),:,:]
-        # s = np.array(s)[self.__rs.choice(len(s), min_samples, replace=False),:,:]
-
-        # fp_a = self.fingerprint_fn(a)
-        # fp_s = self.fingerprint_fn(s)
-
-        fp_a = []
-        for i, _ in enumerate(a):
-            f = np.array(self.fingerprint_fn(a[i : i + 1, :, :])).flatten()
-            fp_a.append(f)
-        # fp_a = np.array(fp_a)
-
-        fp_s = []
-        for i, _ in enumerate(s):
-            f = np.array(self.fingerprint_fn(s[i : i + 1, :, :])).flatten()
-            fp_s.append(f)
-        # fp_s = np.array(fp_s)
-
-        min_samples = min(len(fp_a), len(fp_s))
-        fp_a = np.array(fp_a)[
-            self.__rs.choice(len(fp_a), min_samples, replace=False), :
-        ]
-        fp_s = np.array(fp_s)[
-            self.__rs.choice(len(fp_s), min_samples, replace=False), :
-        ]
-
-        print(f"fp_a shape: {fp_a.shape}")
-        print(f"fp_s shape: {fp_s.shape}")
-
-        dist = cdist(fp_a, fp_s, metric=distance_fn)
-        print(dist.shape)
-        return 0.1
+    def get_fingerprint_from_data(self, data: np.ndarray, n=1) -> np.ndarray:
+        a = random.sample(list(data), n)  # use n random samples to get fingerprint
+        a = np.array(a)
+        a = self.__get_data_ready_for_fingerprinting(a)
+        fp_a = self.fingerprint_fn(a)
+        return fp_a
 
     def __get_all_user_samples(self, user_i: int):
         labels = np.argmax(self.user_labels, axis=1)
@@ -116,166 +88,179 @@ class EEGAuthenticator:
 
         return self.user_data[samples_to_keep, :, :]
 
-    # TODO: replace with DET curve calculations
     # see https://scikit-learn.org/stable/auto_examples/model_selection/plot_det.html
-    def calculate_threshold(self, distance_fn, test_X, test_y) -> float:
-        test_labels = np.argmax(test_y, axis=1)
+    def calculate_threshold(self, distance_fn, test_X, test_y, plot=False) -> float:
+        # user_count = 90
+        fp_count = 1
 
-        unique_users = np.unique(np.argmax(self.user_labels, axis=1))[:10]
-        unique_test_users = np.unique(test_labels)[:10]
+        test_fingerprints, test_labels_y = self.__get_user_fingerprints_from_data(
+            test_X, test_y, fp_count
+        )
+        user_data_fingerprints, user_labels = (
+            self.__get_user_fingerprints_from_user_data(fp_count)
+        )
 
-        bar_total = len(unique_users) * len(unique_test_users)
-
-        def get_all_test_user_samples(user_i: int):
-            samples_to_keep = []
-            for i, label in enumerate(test_labels):
-                if label == user_i:
-                    samples_to_keep.append(i)
-            return test_X[samples_to_keep, :, :]
-
-        # construct the y_true tables for each user
+        distances = cdist(
+            user_data_fingerprints, test_fingerprints, metric=distance_fn.__name__
+        )
+        distances = distances.flatten()
+        # print(f"distances shape: {distances.shape}")
+        # return 0.0
         y_true = []
-        with alive_bar(
-            total=bar_total,
-            title="Constructing y_true table",
-        ) as bar:
-            for user_i in unique_users:
-                # y_true_i = []
-                for test_user_i in unique_test_users:
-                    if test_user_i == user_i:
-                        y_true.append(1)
-                    else:
-                        y_true.append(0)
-                    bar()
-                # y_trues.append(y_true_i)
-
+        for user_label_i in user_labels:
+            for test_label_i in test_labels_y:
+                if int(user_label_i) == int(test_label_i):
+                    y_true.append(1)
+                else:
+                    y_true.append(0)
         y_true = np.array(y_true)
-        # print(f"y_trues shape: {y_trues.shape}")
+        # print(f"y_true shape: {y_true.shape}")
+        # print(f"y_true max: {max(y_true)}")
+        # print(f"y_true min: {min(y_true)}")
 
-        # construct the y_scores tables for each user
-        # clf = SVC(random_state=self.__rs).fit(self.user_data, self.user_labels)
-        # y_scores = clf.decision_function(test_X)
-        y_scores = []
-        with self.__strategy.scope():
-            with alive_bar(
-                total=bar_total,
-                title="Constructing y_scores tables",
-            ) as bar:
-                for user_i in unique_users:
-                    for user_j in unique_test_users:
-                        user_j_samples = get_all_test_user_samples(user_j)
-                        y_score, _ = self.authenticate_user(
-                            user_i, user_j_samples, distance_fn
-                        )
+        # Calculate DET curve
+        fpr, fnr, thresholds = det_curve(y_true, -distances)
 
-                        y_scores.append(y_score)
-                        bar()
+        # Find EER point (where FPR =~ FNR)
+        eer_point = np.nanargmin(np.absolute(fpr - fnr))
+        eer = np.mean([fpr[eer_point], fnr[eer_point]])
 
-        y_scores = np.array(y_scores)
+        # Convert threshold back to original distance scale
+        optimal_threshold = -thresholds[eer_point]
 
-        min_score = min(y_scores)
-        max_score = max(y_scores)
-        no_of_thresholds = 25
-        thresholds = np.linspace(min_score, max_score, no_of_thresholds)
-        print(thresholds)
+        # Plot DET curve
+        if plot:
+            plt.figure(figsize=(10, 10))
+            plt.plot(fpr, fnr)
+            plt.plot([0, 1], [0, 1], "k--")  # diagonal line
+            plt.plot(fpr[eer_point], fnr[eer_point], "ro", label=f"EER = {eer:.3f}")
+            plt.xlim = [0.0, 0.6]
+            plt.ylim = [0.0, 0.6]
 
-        # constructing y_pred table for each threshold
-        y_preds = []
-        with alive_bar(
-            total=no_of_thresholds * bar_total,
-            title="Constructing y_pred for each threshold",
-        ) as bar:
-            for threshold in thresholds:
-                y_pred_i = []
-                for dist in y_scores:
-                    if dist < threshold:
-                        y_pred_i.append(1)
-                    else:
-                        y_pred_i.append(0)
-                    bar()
-                y_preds.append(y_pred_i)
-        y_preds = np.array(y_preds)
+            plt.xlabel("False Positive Rate")
+            plt.ylabel("False Negative Rate")
+            plt.title(f"DET Curve ({distance_fn.__name__} distance)")
+            plt.suptitle(
+                f"Optimal threshold {optimal_threshold:.4f}, EER: {eer * 100:.3f}%"
+            )
+            plt.legend()
+            plt.grid(True)
+            plt.show()
+
+        # print(f"Optimal threshold at EER: {optimal_threshold:.4f}")
+        result = {
+            "optimal_threshold": optimal_threshold,
+            "fpr": fpr,
+            "fnr": fnr,
+            "eer": eer,
+            "eer_point": eer_point,
+            "distance_fn": distance_fn.__name__,
+        }
+        return result
+
+    def calculate_metrics(self, distance_fn, test_X, test_y, threshold):
+        # user_count = 90
+        fp_count = 10
+
+        test_fingerprints, test_labels_y = self.__get_user_fingerprints_from_data(
+            test_X, test_y, fp_count
+        )
+        user_fingerprints, user_labels_y = self.__get_user_fingerprints_from_user_data(
+            fp_count
+        )
+
+        distances = cdist(
+            user_fingerprints, test_fingerprints, metric=distance_fn.__name__
+        )
+        distances = distances.flatten()
+
+        y_true = np.where(np.array([user_labels_y]).T == test_labels_y, 1, 0).flatten()
+
+        # prepare y_pred according to threshold
+        y_pred = (distances <= threshold).astype(int)
+
+        accuracy = accuracy_score(y_true, y_pred)
+        precicion = precision_score(y_true, y_pred)
+        recall = recall_score(y_true, y_pred)
+
+        return {
+            "accuracy": accuracy,
+            "precision": precicion,
+            "recall": recall,
+        }
+
+    def calculate_confusion_matrix(self, distance_fn, test_X, test_y, threshold, fname, cmap='Blues'):
+        # user_count = 90
+        fp_count = 10
+
+        test_fingerprints, test_labels_y = self.__get_user_fingerprints_from_data(
+            test_X, test_y, fp_count
+        )
+        user_fingerprints, user_labels_y = self.__get_user_fingerprints_from_user_data(
+            fp_count
+        )
+
+        distances = cdist(
+            user_fingerprints, test_fingerprints, metric=distance_fn.__name__
+        )
+        distances = distances.flatten()
+
+        y_true = np.where(np.array([user_labels_y]).T == test_labels_y, 1, 0).flatten()
+
+        # prepare y_pred according to threshold
+        y_pred = (distances <= threshold).astype(int)
         
-        fpr = []
-        fnr = []
-        with alive_bar(total=no_of_thresholds, title="Calculating fpr and fnr") as bar:
-            for y_pred in y_preds:
-                # print(f"y_pred={y_pred}")
-                tp = np.sum((y_true == 1) & (y_pred == 1))
-                tn = np.sum((y_true == 0) & (y_pred == 0))
-                fp = np.sum((y_true == 0) & (y_pred == 1))
-                fn = np.sum((y_true == 1) & (y_pred == 0))
-                print(f"tp={tp}, tn={tn}, fp={fp}, fn={fn}")
-                
-                fpr_tmp = fp / (fp + tn) if (fp + tn) > 0 else 0
-                fpr.append(float(fpr_tmp))
-                
-                fnr_tmp = fn / (tp + fn) if (tp + fn) > 0 else 0
-                fnr.append(float(fnr_tmp))
-                
-                bar()
-        
-        print(f"FPR={fpr}")
-        print(f"FNR={fnr}")
-        
-        fig, ax = plt.subplots()
-        ax.plot(fpr, fnr, 'ro')
-        ax.xaxis.set_label_text("FPR")
-        ax.yaxis.set_label_text("FNR")
-        plt.show()
-        
-        return 1.0
+        disp1 = ConfusionMatrixDisplay.from_predictions(
+            y_true,
+            y_pred,
+            display_labels=["Impostor", "Genuine"],
+            cmap=cmap,
+            normalize="true",
+        )
+        disp1.ax_.set_title(f"{fname} Confusion Matrix for {distance_fn.__name__} distance")
+        disp1.figure_.savefig(f"{fname}_confusion_matrix_{distance_fn.__name__}.png")
+    
+    def __get_user_fingerprints_from_data(self, data_X, data_y, fp_count=1):
+        data_labels = np.argmax(data_y, axis=1)
+        unique_data_users = np.unique(data_labels)  # [:user_count]
+        data_fingerprints = []
+        data_labels_y = []
+        for i in unique_data_users:
+            data_samples_i = data_X[data_labels == i]
+            data_fingerprints_i = self.get_fingerprint_from_data(
+                data_samples_i, fp_count
+            )
+            data_fingerprints.append(data_fingerprints_i)
 
-    def confusion_matrix(self, distance_fn, test_X, test_y, threshold):
-        test_labels = np.argmax(test_y, axis=1)
+            data_labels_i = [i] * len(data_fingerprints_i)
+            data_labels_y.append(data_labels_i)
+        data_fingerprints = np.concatenate(data_fingerprints, axis=0)
+        data_labels_y = np.concatenate(data_labels_y, axis=0)
 
-        unique_users = np.unique(np.argmax(self.user_labels, axis=1))
-        unique_test_users = np.unique(test_labels)
+        return data_fingerprints, data_labels_y
 
-        def get_all_test_user_samples(user_i: int):
-            samples_to_keep = []
-            for i, label in enumerate(test_labels):
-                if label == user_i:
-                    samples_to_keep.append(i)
-            return test_X[samples_to_keep, :, :]
+    def __get_user_fingerprints_from_user_data(self, fp_count=1):
+        user_data_fingerprints = []
+        user_labels = []
+        unique_users = np.unique(np.argmax(self.user_labels, axis=1))  # [:user_count]
+        for i in unique_users:
+            user_fingerprint = self.get_fingerprint_of_user_i(i, fp_count)
+            user_data_fingerprints.append(user_fingerprint)
+            user_labels_i = [i] * len(user_fingerprint)
+            user_labels.append(user_labels_i)
+        user_data_fingerprints = np.concatenate(user_data_fingerprints, axis=0)
+        user_labels = np.concatenate(user_labels, axis=0)
 
-        bar_total = len(unique_users) * len(unique_test_users)
-
-        # construct the y_true tables for each user
-        y_true = []
-        with alive_bar(total=bar_total, title="Constructing y_true tables") as bar:
-            for user_i in unique_users:
-                for user_j in unique_test_users:
-                    if user_j == user_i:
-                        y_true.append(1)
-                    else:
-                        y_true.append(0)
-                    bar()
-
-        y_true = np.array(y_true)
-
-        # construct the y_pred tables
-        y_pred = []
-        with alive_bar(total=bar_total, title="Constructing y_pred table") as bar:
-            for user_i in unique_users:
-                for user_j in unique_test_users:
-                    user_j_samples = get_all_test_user_samples(user_j)
-                    _, authed = self.authenticate_user(
-                        user_i, user_j_samples, distance_fn, threshold
-                    )
-                    if authed:
-                        y_pred.append(1)
-                    else:
-                        y_pred.append(0)
-                    bar()
-
-        y_pred = np.array(y_pred)
+        return user_data_fingerprints, user_labels
 
     def __get_data_ready_for_fingerprinting(self, data) -> np.ndarray:
         with self.__strategy.scope():
             # test_data = sliding_window(data, self.__Gamma, self.__D)
             test_data = sliding_window(data, self.__T, self.__delta)
             # print(test_data.shape)
+
+        if len(test_data.shape) == 3:
+            test_data = np.expand_dims(test_data, axis=0)
 
         test_data = tf.transpose(test_data, perm=[0, 2, 3, 1])
 
