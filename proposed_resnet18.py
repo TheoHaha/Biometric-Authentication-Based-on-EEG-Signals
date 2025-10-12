@@ -41,6 +41,7 @@ from my_utils import checkpoint_exists, create_dataset, get_latest_epoch  # type
 # }
 max_epochs = 50
 
+
 # implementing residual blocks from scratch
 @keras.saving.register_keras_serializable()
 class ResidualLayer(keras.layers.Layer):
@@ -127,7 +128,7 @@ def create_model(no_of_channels, no_of_subjects, h, T):
     # Learning Rate Schedule
     # initial_learning_rate = 5e-3
     # lr_schedule = keras.optimizers.schedules.CosineDecay(
-    #     initial_learning_rate, 
+    #     initial_learning_rate,
     #     decay_steps=790,
     # )
 
@@ -137,13 +138,11 @@ def create_model(no_of_channels, no_of_subjects, h, T):
     #     weight_decay=5e-4
     # )
     optimizer = keras.optimizers.SGD(
-        learning_rate=0.02,
-        momentum=0.9,
-        weight_decay=5e-4
+        learning_rate=0.02, momentum=0.9, weight_decay=5e-4
     )
-    
+
     loss = CategoricalCrossentropy()
-    
+
     model.compile(
         optimizer=optimizer,
         loss=loss,
@@ -234,7 +233,7 @@ def prepare_callbacks(save_file_dir, chosen_channels):
         os.mkdir(save_file_dir)
         print(f"Created directory {save_file_dir}")
     callbacks = []
-    
+
     # set up checkpoint callback with the given save file directory
     cp_file_name = f"resnet18_C_{chosen_channels}" + "-epoch_{epoch:02d}.keras"
     checkpoint_path = os.path.join(save_file_dir, cp_file_name)
@@ -242,7 +241,7 @@ def prepare_callbacks(save_file_dir, chosen_channels):
         filepath=checkpoint_path, save_weights_only=False, verbose=1
     )
     callbacks.append(checkpoint_callback)
-    
+
     del_checkpoint_callback = DeleteCheckpointCallback(
         save_file_dir, chosen_channels, max_epochs=max_epochs
     )
@@ -250,20 +249,17 @@ def prepare_callbacks(save_file_dir, chosen_channels):
 
     # set up early stopping callback
     early_stopping_callback = EarlyStopping(
-        monitor='val_loss',
-        min_delta=1e-4,
-        patience=10,
-        restore_best_weights=True
+        monitor="val_loss", min_delta=1e-4, patience=10, restore_best_weights=True
     )
     callbacks.append(early_stopping_callback)
-    
+
     # set up profiling
     # tensorboard_callback = keras.callbacks.TensorBoard(
     #     log_dir=os.path.join(save_file_dir, "logs"),
     #     histogram_freq=1,
     #     write_steps_per_second=True,
     # )
-    
+
     return callbacks
 
 
